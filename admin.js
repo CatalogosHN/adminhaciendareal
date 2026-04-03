@@ -4,7 +4,12 @@ const els = {
   branch: document.getElementById('gh-branch'),
   token: document.getElementById('gh-token'),
   remember: document.getElementById('remember-config'),
+  loadProducts: document.getElementById('load-products'),
+  saveAll: document.getElementById('save-all'),
+  saveDraft: document.getElementById('save-draft'),
+  newProduct: document.getElementById('new-product'),
   form: document.getElementById('product-form'),
+  editingUid: document.getElementById('editing-uid'),
   name: document.getElementById('name'),
   price: document.getElementById('price'),
   status: document.getElementById('status'),
@@ -13,16 +18,33 @@ const els = {
   desc2: document.getElementById('desc2'),
   desc3: document.getElementById('desc3'),
   images: document.getElementById('images'),
-  preview: document.getElementById('image-preview'),
+  existingPreview: document.getElementById('existing-preview'),
+  newPreview: document.getElementById('new-preview'),
   statusBox: document.getElementById('status-box'),
-  fillExample: document.getElementById('fill-example'),
-  refreshProducts: document.getElementById('refresh-products'),
   productsList: document.getElementById('products-admin-list'),
-  productCount: document.getElementById('product-count')
+  productCount: document.getElementById('product-count'),
+  pendingCount: document.getElementById('pending-count'),
+  searchProducts: document.getElementById('search-products'),
+  editorTitle: document.getElementById('editor-title'),
+  sessionLock: document.getElementById('session-lock'),
+  unlockToken: document.getElementById('unlock-token'),
+  unlockSession: document.getElementById('unlock-session')
 };
 
-const STORAGE_KEY = 'hacienda-real-admin-config-v1';
-let publicProducts = [];
+const STORAGE_KEY = 'hacienda-real-admin-config-v2';
+const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
+
+const state = {
+  workingProducts: [],
+  dirty: false,
+  isSaving: false,
+  searchTerm: '',
+  pendingExistingImages: [],
+  pendingNewFiles: [],
+  objectUrls: [],
+  inactivityTimer: null,
+  locked: false
+};
 
 function showStatus(message, type = 'info') {
   els.statusBox.textContent = message;
@@ -34,6 +56,15 @@ function hideStatus() {
   els.statusBox.classList.add('hidden');
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function slugify(text) {
   return String(text || '')
     .normalize('NFD')
@@ -41,6 +72,74 @@ function slugify(text) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '') || 'producto';
+}
+
+function makeUid() {
+  return `p_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function fixMojibake(value) {
+  let current = String(value ?? '');
+  for (let i = 0; i < 4; i += 1) {
+    if (!/[ÃÂâð]/.test(current)) break;
+    try {
+      const next = decodeURIComponent(escape(current));
+      if (!next || next === current) break;
+      current = next;
+    } catch {
+      break;
+    }
+  }
+  return current;
+}
+
+function cleanText(value) {
+  return fixMojibake(String(value ?? '').trim());
+}
+
+function parseCategories(raw) {
+  return String(raw || '')
+    .split(',')
+    .map(v => cleanText(v))
+    .filter(Boolean);
+}
+
+function normalizeProduct(product = {}) {
+  const categoriesRaw = Array.isArray(product.categories)
+    ? product.categories
+    : (typeof product.categories === 'string'
+        ? product.categories.split(',')
+        : (typeof product.category === 'string' ? [product.category] : []));
+
+  const descriptionsRaw = Array.isArray(product.description)
+    ? product.description
+    : [product.description].filter(Boolean);
+
+  const imagesRaw = Array.isArray(product.images)
+    ? product.images
+    : [product.images].filter(Boolean);
+
+  return {
+    uid: product.uid || makeUid(),
+    name: cleanText(product.name || ''),
+    price: Number(product.price || 0),
+    categories: categoriesRaw.map(cleanText).filter(Boolean),
+    description: descriptionsRaw.map(cleanText).filter(Boolean).slice(0, 3),
+    status: /(agotado|sin\s*stock|no\s*disponible)/i.test(String(product.status || '')) ? 'agotado' : 'disponible',
+    images: imagesRaw.map(v => String(v || '').trim()).filter(Boolean),
+    _newFiles: []
+  };
+}
+
+function normalizeProductsArray(list) {
+  return Array.isArray(list) ? list.map(normalizeProduct) : [];
+}
+
+function setDirty(value) {
+  state.dirty = Boolean(value);
+  const pending = state.dirty ? 'Cambios pendientes' : 'Sin cambios pendientes';
+  els.pendingCount.textContent = pending;
+  els.pendingCount.classList.toggle('badge-warning', state.dirty);
 }
 
 function getConfig() {
@@ -66,7 +165,12 @@ function saveConfigIfNeeded() {
     return;
   }
   const cfg = getConfig();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+  const safeConfig = {
+    owner: cfg.owner,
+    repo: cfg.repo,
+    branch: cfg.branch
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(safeConfig));
 }
 
 function loadSavedConfig() {
@@ -77,89 +181,223 @@ function loadSavedConfig() {
     els.owner.value = cfg.owner || '';
     els.repo.value = cfg.repo || '';
     els.branch.value = cfg.branch || 'main';
-    els.token.value = cfg.token || '';
     els.remember.checked = true;
   } catch {
     localStorage.removeItem(STORAGE_KEY);
   }
 }
 
-function parseCategories(raw) {
-  return String(raw || '')
-    .split(',')
-    .map(v => v.trim())
-    .filter(Boolean);
+function resetInactivityTimer() {
+  if (state.locked) return;
+  clearTimeout(state.inactivityTimer);
+  state.inactivityTimer = setTimeout(lockSession, SESSION_TIMEOUT_MS);
 }
 
-function renderImagePreview(files) {
-  els.preview.innerHTML = '';
-  [...files].forEach(file => {
-    const img = document.createElement('img');
-    img.src = URL.createObjectURL(file);
-    img.onload = () => URL.revokeObjectURL(img.src);
-    els.preview.appendChild(img);
+function lockSession() {
+  state.locked = true;
+  els.token.value = '';
+  els.unlockToken.value = '';
+  els.sessionLock.classList.remove('hidden');
+  els.sessionLock.setAttribute('aria-hidden', 'false');
+}
+
+function unlockSession() {
+  const token = els.unlockToken.value.trim();
+  if (!token) {
+    showStatus('Escribe de nuevo el token para desbloquear.', 'error');
+    return;
+  }
+  els.token.value = token;
+  els.unlockToken.value = '';
+  state.locked = false;
+  els.sessionLock.classList.add('hidden');
+  els.sessionLock.setAttribute('aria-hidden', 'true');
+  showStatus('Sesión restaurada.', 'success');
+  resetInactivityTimer();
+}
+
+function ensureUnlocked() {
+  if (state.locked) {
+    throw new Error('La sesión está bloqueada por inactividad. Vuelve a escribir el token.');
+  }
+}
+
+function revokePreviewUrls() {
+  state.objectUrls.forEach(url => URL.revokeObjectURL(url));
+  state.objectUrls = [];
+}
+
+function renderImageCard(src, caption, index, type) {
+  return `
+    <div class="preview-card">
+      <img src="${escapeHtml(src)}" alt="${escapeHtml(caption)}">
+      <button class="remove-image" type="button" data-remove-image="${type}" data-index="${index}">×</button>
+      <div class="caption">${escapeHtml(caption)}</div>
+    </div>
+  `;
+}
+
+function renderEditorPreviews() {
+  revokePreviewUrls();
+
+  if (!state.pendingExistingImages.length) {
+    els.existingPreview.innerHTML = '<div class="muted-empty">Sin imágenes actuales.</div>';
+  } else {
+    els.existingPreview.innerHTML = state.pendingExistingImages
+      .map((src, index) => renderImageCard(src, `Imagen actual ${index + 1}`, index, 'existing'))
+      .join('');
+  }
+
+  if (!state.pendingNewFiles.length) {
+    els.newPreview.innerHTML = '<div class="muted-empty">No hay imágenes nuevas pendientes.</div>';
+  } else {
+    els.newPreview.innerHTML = state.pendingNewFiles.map((file, index) => {
+      const url = URL.createObjectURL(file);
+      state.objectUrls.push(url);
+      return renderImageCard(url, file.name, index, 'new');
+    }).join('');
+  }
+}
+
+function clearEditor({ keepStatus = true } = {}) {
+  els.editingUid.value = '';
+  els.name.value = '';
+  els.price.value = '';
+  if (!keepStatus) els.status.value = 'disponible';
+  els.categories.value = '';
+  els.desc1.value = '';
+  els.desc2.value = '';
+  els.desc3.value = '';
+  els.images.value = '';
+  state.pendingExistingImages = [];
+  state.pendingNewFiles = [];
+  els.editorTitle.textContent = 'Nuevo producto';
+  renderEditorPreviews();
+}
+
+function fillEditor(product) {
+  els.editingUid.value = product.uid;
+  els.name.value = product.name || '';
+  els.price.value = Number(product.price || 0);
+  els.status.value = product.status || 'disponible';
+  els.categories.value = (product.categories || []).join(', ');
+  els.desc1.value = product.description?.[0] || '';
+  els.desc2.value = product.description?.[1] || '';
+  els.desc3.value = product.description?.[2] || '';
+  els.images.value = '';
+  state.pendingExistingImages = [...(product.images || [])];
+  state.pendingNewFiles = [...(product._newFiles || [])];
+  els.editorTitle.textContent = `Editando: ${product.name}`;
+  renderEditorPreviews();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function currentEditorProduct() {
+  const name = cleanText(els.name.value);
+  const descriptions = [els.desc1.value, els.desc2.value, els.desc3.value]
+    .map(cleanText)
+    .filter(Boolean);
+
+  const product = {
+    uid: els.editingUid.value || makeUid(),
+    name,
+    price: Number(els.price.value || 0),
+    categories: parseCategories(els.categories.value),
+    description: descriptions,
+    status: els.status.value,
+    images: [...state.pendingExistingImages],
+    _newFiles: [...state.pendingNewFiles]
+  };
+
+  if (!product.name) {
+    throw new Error('Escribe el nombre del producto.');
+  }
+  if (!Number.isFinite(product.price) || product.price < 0) {
+    throw new Error('El precio no es válido.');
+  }
+  if (!product.description.length) {
+    throw new Error('Agrega al menos una descripción.');
+  }
+  if (!product.images.length && !product._newFiles.length) {
+    throw new Error('Debes dejar al menos una imagen actual o nueva.');
+  }
+
+  return product;
+}
+
+function renderProductsList() {
+  const list = state.workingProducts.filter(product => {
+    if (!state.searchTerm) return true;
+    const haystack = `${product.name} ${(product.categories || []).join(' ')}`.toLowerCase();
+    return haystack.includes(state.searchTerm);
   });
+
+  els.productCount.textContent = `${state.workingProducts.length} producto${state.workingProducts.length === 1 ? '' : 's'}`;
+
+  if (!list.length) {
+    els.productsList.innerHTML = '<div class="muted-empty">No hay productos cargados o el filtro no encontró resultados.</div>';
+    return;
+  }
+
+  els.productsList.innerHTML = list.map((product) => {
+    const available = product.status !== 'agotado';
+    const categories = (product.categories || []).join(', ') || 'Sin categoría';
+    const pendingImages = (product._newFiles || []).length;
+    const image = product.images?.[0] || '';
+
+    return `
+      <article class="admin-item">
+        <img src="${escapeHtml(image)}" alt="${escapeHtml(product.name)}">
+        <div>
+          <h3>${escapeHtml(product.name)}</h3>
+          <p>L ${Number(product.price || 0).toFixed(2)}</p>
+          <div class="meta-row">
+            <span class="pill ${available ? 'available' : 'soldout'}">${available ? 'Disponible' : 'Agotado'}</span>
+            <span class="pill">${escapeHtml(categories)}</span>
+            <span class="pill draft">${pendingImages} imágenes nuevas</span>
+          </div>
+        </div>
+        <div class="item-actions">
+          <button class="btn ghost small" type="button" data-action="edit" data-uid="${product.uid}">Editar</button>
+          <button class="btn ghost small" type="button" data-action="duplicate" data-uid="${product.uid}">Duplicar</button>
+          <button class="btn warn small" type="button" data-action="toggle" data-uid="${product.uid}">${available ? 'Marcar agotado' : 'Marcar disponible'}</button>
+          <button class="btn danger small" type="button" data-action="delete" data-uid="${product.uid}">Eliminar</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function upsertWorkingProduct(product) {
+  const normalized = normalizeProduct(product);
+  normalized.uid = product.uid || normalized.uid;
+  normalized.images = [...(product.images || [])];
+  normalized._newFiles = [...(product._newFiles || [])];
+
+  const index = state.workingProducts.findIndex(item => item.uid === normalized.uid);
+  if (index >= 0) {
+    state.workingProducts[index] = normalized;
+  } else {
+    state.workingProducts.unshift(normalized);
+  }
+  setDirty(true);
+  renderProductsList();
 }
 
 async function fetchPublicProducts() {
-  const cfg = getConfig();
-
-  if (!cfg.owner || !cfg.repo || !cfg.branch) {
-    publicProducts = [];
-    renderAdminProducts(publicProducts);
-    showStatus('Completa owner, repositorio y rama, luego pulsa "Cargar productos".', 'error');
-    return;
-  }
-
+  const cfg = validateConfig(false);
+  showStatus('Cargando productos desde GitHub...');
   const url = `https://raw.githubusercontent.com/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/${encodeURIComponent(cfg.branch)}/products.json?v=${Date.now()}`;
-
   const res = await fetch(url, { cache: 'no-store' });
-
   if (!res.ok) {
-    throw new Error(`No se pudo leer products.json del repo público (${res.status}). Revisa owner, repo, rama y que exista el archivo.`);
+    throw new Error(`No se pudo leer products.json (${res.status}). Revisa owner, repo, rama y que exista el archivo.`);
   }
-
   const data = await res.json();
-  publicProducts = Array.isArray(data) ? data : [];
-  renderAdminProducts(publicProducts);
-}
-
-function renderAdminProducts(products) {
-  els.productCount.textContent = `${products.length} producto${products.length === 1 ? '' : 's'}`;
-  els.productsList.innerHTML = '';
-
-  if (!products.length) {
-    els.productsList.innerHTML = '<p class="muted">No hay productos cargados todavía.</p>';
-    return;
-  }
-
-  products.forEach((product, index) => {
-    const item = document.createElement('article');
-    item.className = 'admin-item';
-    const status = String(product.status || '').toLowerCase();
-    const available = !/(agotado|sin\s*stock|no\s*disponible)/i.test(status);
-    const categories = Array.isArray(product.categories)
-      ? product.categories.join(', ')
-      : (product.category || product.categories || 'Sin categoría');
-
-    item.innerHTML = `
-      <img src="${(product.images && product.images[0]) || ''}" alt="${product.name}">
-      <div>
-        <h3>${product.name}</h3>
-        <p>L ${Number(product.price || 0).toFixed(2)}</p>
-        <div class="meta-row">
-          <span class="pill ${available ? 'available' : 'soldout'}">${available ? 'Disponible' : 'Agotado'}</span>
-          <span class="pill">${categories}</span>
-        </div>
-      </div>
-      <div class="item-actions">
-        <button class="btn warn" type="button" data-action="toggle" data-index="${index}">${available ? 'Marcar agotado' : 'Marcar disponible'}</button>
-        <button class="btn danger" type="button" data-action="delete" data-index="${index}">Eliminar</button>
-      </div>
-    `;
-
-    els.productsList.appendChild(item);
-  });
+  state.workingProducts = normalizeProductsArray(data);
+  setDirty(false);
+  renderProductsList();
+  clearEditor();
+  showStatus('Productos cargados correctamente.', 'success');
 }
 
 async function githubRequest(path, method = 'GET', body = null, cfg = null) {
@@ -233,10 +471,10 @@ async function uploadImage(file, productSlug, index, cfg) {
 
 async function getRepoProducts(cfg) {
   const data = await githubRequest('products.json', 'GET', null, cfg);
-  const decoded = atob(data.content.replace(/\n/g, ''));
+  const decoded = decodeURIComponent(escape(atob(data.content.replace(/\n/g, ''))));
   return {
     sha: data.sha,
-    products: JSON.parse(decoded)
+    products: normalizeProductsArray(JSON.parse(decoded))
   };
 }
 
@@ -250,117 +488,213 @@ async function saveRepoProducts(products, sha, message, cfg) {
   }, cfg);
 }
 
-function buildProductFromForm(imagePaths) {
+function finalizeProductForSave(product) {
   return {
-    name: els.name.value.trim(),
-    price: Number(els.price.value),
-    categories: parseCategories(els.categories.value),
-    description: [els.desc1.value.trim(), els.desc2.value.trim(), els.desc3.value.trim()].filter(Boolean),
-    status: els.status.value,
-    images: imagePaths
+    name: cleanText(product.name),
+    price: Number(product.price || 0),
+    categories: (product.categories || []).map(cleanText).filter(Boolean),
+    description: (product.description || []).map(cleanText).filter(Boolean),
+    status: product.status === 'agotado' ? 'agotado' : 'disponible',
+    images: (product.images || []).filter(Boolean)
   };
 }
 
-async function handleSubmit(event) {
-  event.preventDefault();
-  hideStatus();
+function collectImageSet(products) {
+  const set = new Set();
+  products.forEach(product => {
+    (product.images || []).forEach(path => set.add(path));
+  });
+  return set;
+}
 
-  const files = [...els.images.files];
-  if (!files.length) {
-    showStatus('Selecciona al menos una foto.', 'error');
+async function deleteRepoFileIfPossible(path, cfg) {
+  try {
+    const fileData = await githubRequest(path, 'GET', null, cfg);
+    await githubRequest(path, 'DELETE', {
+      message: `Eliminar archivo huérfano: ${path}`,
+      sha: fileData.sha,
+      branch: cfg.branch
+    }, cfg);
+  } catch (error) {
+    console.warn('No se pudo eliminar archivo huérfano:', path, error);
+  }
+}
+
+async function saveAllChanges() {
+  ensureUnlocked();
+  if (state.isSaving) return;
+  const cfg = validateConfig(true);
+  saveConfigIfNeeded();
+
+  state.isSaving = true;
+  els.saveAll.disabled = true;
+  els.saveDraft.disabled = true;
+  try {
+    showStatus('Preparando cambios y sincronizando con GitHub...');
+    const repoData = await getRepoProducts(cfg);
+    const oldImageSet = collectImageSet(repoData.products);
+
+    const finalProducts = [];
+    for (const product of state.workingProducts) {
+      const productSlug = slugify(product.name || 'producto');
+      const uploadedPaths = [];
+      const newFiles = product._newFiles || [];
+
+      for (let i = 0; i < newFiles.length; i += 1) {
+        showStatus(`Subiendo imágenes: ${product.name} (${i + 1}/${newFiles.length})...`);
+        uploadedPaths.push(await uploadImage(newFiles[i], productSlug, i, cfg));
+      }
+
+      const merged = {
+        ...product,
+        images: [...(product.images || []), ...uploadedPaths],
+        _newFiles: []
+      };
+      finalProducts.push(finalizeProductForSave(merged));
+    }
+
+    showStatus('Guardando products.json...');
+    await saveRepoProducts(finalProducts, repoData.sha, 'Actualizar catálogo desde admin', cfg);
+
+    const newImageSet = collectImageSet(finalProducts);
+    const orphanedAdminImages = [...oldImageSet].filter(path => {
+      return path.startsWith('images/admin/') && !newImageSet.has(path);
+    });
+
+    for (const path of orphanedAdminImages) {
+      showStatus(`Limpiando imagen sin uso: ${path}`);
+      await deleteRepoFileIfPossible(path, cfg);
+    }
+
+    state.workingProducts = normalizeProductsArray(finalProducts);
+    setDirty(false);
+    renderProductsList();
+    clearEditor();
+    showStatus('Todos los cambios se guardaron correctamente en GitHub.', 'success');
+  } catch (error) {
+    console.error(error);
+    showStatus(error.message || 'No se pudieron guardar los cambios.', 'error');
+  } finally {
+    state.isSaving = false;
+    els.saveAll.disabled = false;
+    els.saveDraft.disabled = false;
+  }
+}
+
+function saveDraftFromEditor() {
+  try {
+    const product = currentEditorProduct();
+    upsertWorkingProduct(product);
+    showStatus(`Borrador guardado: ${product.name}`, 'success');
+    clearEditor();
+  } catch (error) {
+    showStatus(error.message || 'No se pudo guardar el borrador.', 'error');
+  }
+}
+
+function removeEditorImage(type, index) {
+  if (type === 'existing') {
+    state.pendingExistingImages.splice(index, 1);
+  }
+  if (type === 'new') {
+    state.pendingNewFiles.splice(index, 1);
+  }
+  renderEditorPreviews();
+}
+
+function onProductsListClick(event) {
+  const btn = event.target.closest('button[data-action]');
+  if (!btn) return;
+  const uid = btn.dataset.uid;
+  const action = btn.dataset.action;
+  const index = state.workingProducts.findIndex(item => item.uid === uid);
+  const product = state.workingProducts[index];
+  if (!product) return;
+
+  if (action === 'edit') {
+    fillEditor(product);
     return;
   }
 
-  const cfg = validateConfig(true);
-  saveConfigIfNeeded();
+  if (action === 'duplicate') {
+    const copy = {
+      ...product,
+      uid: makeUid(),
+      name: `${product.name} copia`,
+      images: [...(product.images || [])],
+      _newFiles: []
+    };
+    state.workingProducts.unshift(copy);
+    setDirty(true);
+    renderProductsList();
+    showStatus(`Producto duplicado: ${copy.name}`, 'success');
+    return;
+  }
 
-  showStatus('Subiendo imágenes y actualizando products.json...');
+  if (action === 'toggle') {
+    product.status = product.status === 'agotado' ? 'disponible' : 'agotado';
+    setDirty(true);
+    renderProductsList();
+    return;
+  }
 
-  try {
-    const productSlug = slugify(els.name.value);
-    const imagePaths = [];
-    for (let i = 0; i < files.length; i += 1) {
-      showStatus(`Subiendo imagen ${i + 1} de ${files.length}...`);
-      imagePaths.push(await uploadImage(files[i], productSlug, i, cfg));
-    }
-
-    showStatus('Actualizando lista de productos...');
-    const repoData = await getRepoProducts(cfg);
-    const newProduct = buildProductFromForm(imagePaths);
-    repoData.products.unshift(newProduct);
-    await saveRepoProducts(repoData.products, repoData.sha, `Agregar producto: ${newProduct.name}`, cfg);
-
-    els.form.reset();
-    els.preview.innerHTML = '';
-    showStatus(`Producto guardado correctamente: ${newProduct.name}`, 'success');
-    await fetchPublicProducts();
-  } catch (err) {
-    console.error(err);
-    showStatus(err.message || 'No se pudo guardar el producto.', 'error');
+  if (action === 'delete') {
+    const confirmed = confirm(`¿Eliminar el producto "${product.name}" del borrador actual?`);
+    if (!confirmed) return;
+    state.workingProducts.splice(index, 1);
+    if (els.editingUid.value === uid) clearEditor();
+    setDirty(true);
+    renderProductsList();
   }
 }
 
-async function persistModifiedProducts(nextProducts, message) {
-  const cfg = validateConfig(true);
-  saveConfigIfNeeded();
-  showStatus('Guardando cambios en GitHub...');
-  const repoData = await getRepoProducts(cfg);
-  await saveRepoProducts(nextProducts, repoData.sha, message, cfg);
-  showStatus('Cambios guardados correctamente.', 'success');
-  await fetchPublicProducts();
+function handleImageSelection() {
+  const files = [...els.images.files].filter(file => file.type.startsWith('image/'));
+  if (!files.length) return;
+  state.pendingNewFiles.push(...files);
+  els.images.value = '';
+  renderEditorPreviews();
 }
 
-async function onProductsListClick(event) {
-  const btn = event.target.closest('button[data-action]');
+function onPreviewClick(event) {
+  const btn = event.target.closest('button[data-remove-image]');
   if (!btn) return;
-
-  const index = Number(btn.dataset.index);
-  const action = btn.dataset.action;
-  const product = publicProducts[index];
-  if (!product) return;
-
-  try {
-    if (action === 'toggle') {
-      const next = publicProducts.map((item, idx) => idx === index
-        ? { ...item, status: /(agotado|sin\s*stock|no\s*disponible)/i.test(String(item.status || '')) ? 'disponible' : 'agotado' }
-        : item);
-      await persistModifiedProducts(next, `Cambiar estado: ${product.name}`);
-    }
-
-    if (action === 'delete') {
-      const confirmed = confirm(`¿Eliminar el producto "${product.name}"?`);
-      if (!confirmed) return;
-      const next = publicProducts.filter((_, idx) => idx !== index);
-      await persistModifiedProducts(next, `Eliminar producto: ${product.name}`);
-    }
-  } catch (err) {
-    console.error(err);
-    showStatus(err.message || 'No se pudo guardar el cambio.', 'error');
-  }
+  removeEditorImage(btn.dataset.removeImage, Number(btn.dataset.index));
 }
 
-function fillExample() {
-  els.name.value = 'Power Bank 20,000 mAh Carga Rápida';
-  els.price.value = '650';
-  els.status.value = 'disponible';
-  els.categories.value = 'Tecnologia y Juegos, Accesorios Varios';
-  els.desc1.value = '⚡ Batería portátil de alta capacidad para cargar tu celular varias veces durante el día.';
-  els.desc2.value = '🔋 Incluye puertos de carga rápida y diseño compacto para llevarla en mochila, bolso o carro.';
-  els.desc3.value = '📱 Ideal para viajes, trabajo o emergencias cuando no tienes un enchufe cerca.';
+function onSearchInput() {
+  state.searchTerm = String(els.searchProducts.value || '').trim().toLowerCase();
+  renderProductsList();
 }
 
-els.images.addEventListener('change', () => renderImagePreview(els.images.files));
-els.form.addEventListener('submit', handleSubmit);
-els.fillExample.addEventListener('click', fillExample);
-els.refreshProducts.addEventListener('click', fetchPublicProducts);
-els.productsList.addEventListener('click', onProductsListClick);
-[els.owner, els.repo, els.branch, els.token, els.remember].forEach(el => el.addEventListener('change', saveConfigIfNeeded));
-
-loadSavedConfig();
-
-if (els.owner.value && els.repo.value && els.branch.value) {
+els.images.addEventListener('change', handleImageSelection);
+els.saveDraft.addEventListener('click', saveDraftFromEditor);
+els.newProduct.addEventListener('click', () => clearEditor({ keepStatus: false }));
+els.loadProducts.addEventListener('click', () => {
   fetchPublicProducts().catch(err => {
     console.error(err);
-    showStatus(err.message || 'No se pudieron cargar los productos actuales.', 'error');
+    showStatus(err.message || 'No se pudieron cargar los productos.', 'error');
   });
-}
+});
+els.saveAll.addEventListener('click', saveAllChanges);
+els.productsList.addEventListener('click', onProductsListClick);
+els.existingPreview.addEventListener('click', onPreviewClick);
+els.newPreview.addEventListener('click', onPreviewClick);
+els.searchProducts.addEventListener('input', onSearchInput);
+els.unlockSession.addEventListener('click', unlockSession);
+els.unlockToken.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') unlockSession();
+});
+els.form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveDraftFromEditor();
+});
+[els.owner, els.repo, els.branch, els.remember].forEach(el => el.addEventListener('change', saveConfigIfNeeded));
+['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(evt => {
+  window.addEventListener(evt, resetInactivityTimer, { passive: true });
+});
+
+loadSavedConfig();
+clearEditor({ keepStatus: false });
+renderProductsList();
+resetInactivityTimer();

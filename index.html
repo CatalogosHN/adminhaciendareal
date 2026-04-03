@@ -4,24 +4,45 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Admin | Hacienda Real HN</title>
-  <link rel="stylesheet" href="admin.css?v=20260402v1" />
-  <script defer src="admin.js?v=20260402v1"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="admin.css?v=20260403v2" />
+  <script defer src="admin.js?v=20260403v2"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
+  <div id="session-lock" class="session-lock hidden" aria-hidden="true">
+    <div class="session-card">
+      <p class="eyebrow">Sesión bloqueada</p>
+      <h2>Volvió a cerrarse por inactividad</h2>
+      <p class="muted">Por seguridad, el token se limpió después de 10 minutos sin actividad. Vuelve a escribirlo para continuar.</p>
+      <label>
+        Token GitHub
+        <input id="unlock-token" type="password" placeholder="Pega de nuevo tu token" />
+      </label>
+      <div class="actions">
+        <button id="unlock-session" class="btn primary" type="button">Desbloquear sesión</button>
+      </div>
+    </div>
+  </div>
+
   <header class="topbar">
     <div>
       <p class="eyebrow">Panel privado</p>
       <h1>Administrador de productos</h1>
-      <p class="sub">Agrega productos nuevos, sube fotos y cambia disponibilidad sin tocar el código a mano.</p>
+      <p class="sub">Agrega varios productos seguidos, edita texto e imágenes, elimina productos y guarda todo en un solo envío al repo público.</p>
     </div>
-    <a class="back-link" href="index.html">← Ver catálogo</a>
   </header>
 
   <main class="layout">
     <section class="card">
-      <h2>Configuración GitHub</h2>
-      <p class="muted">Este panel actualiza <code>products.json</code> y sube imágenes al repo para que todos vean los cambios al entrar al sitio.</p>
+      <div class="section-head">
+        <h2>Configuración GitHub</h2>
+        <div class="actions compact">
+          <button id="load-products" class="btn ghost" type="button">Cargar desde GitHub</button>
+          <button id="save-all" class="btn primary" type="button">Guardar todo en GitHub</button>
+        </div>
+      </div>
+
+      <p class="muted">Este panel edita el <code>products.json</code> del repo público y sube imágenes a <code>images/admin/</code>. El token no se guarda y se limpia automáticamente por inactividad.</p>
 
       <div class="grid two">
         <label>
@@ -29,7 +50,7 @@
           <input id="gh-owner" type="text" placeholder="Ej: CatalogosHN" />
         </label>
         <label>
-          Repositorio
+          Repositorio público
           <input id="gh-repo" type="text" placeholder="Ej: HaciendaReal" />
         </label>
         <label>
@@ -38,23 +59,35 @@
         </label>
         <label>
           Token GitHub
-          <input id="gh-token" type="password" placeholder="Fine-grained PAT" />
+          <input id="gh-token" type="password" placeholder="Fine-grained PAT con Contents: Read & Write" autocomplete="off" />
         </label>
       </div>
 
       <label class="remember-row">
         <input id="remember-config" type="checkbox" />
-        <span>Recordar esta configuración en este navegador</span>
+        <span>Recordar owner, repo y rama en este navegador</span>
       </label>
+
+      <div class="summary-row">
+        <span id="product-count" class="badge">0 productos</span>
+        <span id="pending-count" class="badge badge-warning">0 cambios pendientes</span>
+      </div>
+
+      <div id="status-box" class="status-box hidden"></div>
     </section>
 
-    <section class="card">
+    <section class="card editor-card">
       <div class="section-head">
-        <h2>Agregar producto</h2>
-        <button id="fill-example" class="btn ghost" type="button">Cargar ejemplo</button>
+        <h2 id="editor-title">Nuevo producto</h2>
+        <div class="actions compact">
+          <button id="new-product" class="btn ghost" type="button">Nuevo producto</button>
+          <button id="save-draft" class="btn primary" type="button">Guardar en borrador</button>
+        </div>
       </div>
 
       <form id="product-form" class="form-stack">
+        <input id="editing-uid" type="hidden" />
+
         <div class="grid two">
           <label>
             Nombre del producto
@@ -96,26 +129,27 @@
         </div>
 
         <label>
-          Fotos del producto
-          <input id="images" type="file" accept="image/*" multiple required />
-          <small class="muted">Se comprimen automáticamente antes de subirlas para que el catálogo cargue más rápido.</small>
+          Agregar fotos nuevas
+          <input id="images" type="file" accept="image/*" multiple />
+          <small class="muted">Puedes seguir agregando varias fotos. Se comprimen antes de subirse para que el catálogo cargue más rápido.</small>
         </label>
 
-        <div id="image-preview" class="preview-grid"></div>
+        <div>
+          <p class="mini-title">Imágenes actuales</p>
+          <div id="existing-preview" class="preview-grid"></div>
+        </div>
 
-        <div class="actions">
-          <button id="save-product" class="btn primary" type="submit">Guardar producto</button>
-          <button id="refresh-products" class="btn ghost" type="button">Recargar lista</button>
+        <div>
+          <p class="mini-title">Imágenes nuevas pendientes</p>
+          <div id="new-preview" class="preview-grid"></div>
         </div>
       </form>
-
-      <div id="status-box" class="status-box hidden"></div>
     </section>
 
     <section class="card">
       <div class="section-head">
-        <h2>Productos actuales</h2>
-        <span id="product-count" class="badge">0 productos</span>
+        <h2>Productos en borrador / actuales</h2>
+        <input id="search-products" class="search-input" type="search" placeholder="Buscar por nombre o categoría" />
       </div>
       <div id="products-admin-list" class="admin-products"></div>
     </section>

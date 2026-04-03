@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin | Hacienda Real HN</title>
+  <link rel="stylesheet" href="admin.css?v=20260402v1" />
+  <script defer src="admin.js?v=20260402v1"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Panel privado</p>
+      <h1>Administrador de productos</h1>
+      <p class="sub">Agrega productos nuevos, sube fotos y cambia disponibilidad sin tocar el código a mano.</p>
+    </div>
+    <a class="back-link" href="index.html">← Ver catálogo</a>
+  </header>
+
+  <main class="layout">
+    <section class="card">
+      <h2>Configuración GitHub</h2>
+      <p class="muted">Este panel actualiza <code>products.json</code> y sube imágenes al repo para que todos vean los cambios al entrar al sitio.</p>
+
+      <div class="grid two">
+        <label>
+          Owner
+          <input id="gh-owner" type="text" placeholder="Ej: CatalogosHN" />
+        </label>
+        <label>
+          Repositorio
+          <input id="gh-repo" type="text" placeholder="Ej: HaciendaReal" />
+        </label>
+        <label>
+          Rama
+          <input id="gh-branch" type="text" placeholder="main" value="main" />
+        </label>
+        <label>
+          Token GitHub
+          <input id="gh-token" type="password" placeholder="Fine-grained PAT" />
+        </label>
+      </div>
+
+      <label class="remember-row">
+        <input id="remember-config" type="checkbox" />
+        <span>Recordar esta configuración en este navegador</span>
+      </label>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Agregar producto</h2>
+        <button id="fill-example" class="btn ghost" type="button">Cargar ejemplo</button>
+      </div>
+
+      <form id="product-form" class="form-stack">
+        <div class="grid two">
+          <label>
+            Nombre del producto
+            <input id="name" type="text" required placeholder="Ej: Power Bank 20,000 mAh" />
+          </label>
+          <label>
+            Precio en Lempiras
+            <input id="price" type="number" min="0" step="0.01" required placeholder="350" />
+          </label>
+        </div>
+
+        <div class="grid two">
+          <label>
+            Estado
+            <select id="status">
+              <option value="disponible">Disponible</option>
+              <option value="agotado">Agotado</option>
+            </select>
+          </label>
+          <label>
+            Categorías
+            <input id="categories" type="text" placeholder="Tecnologia y Juegos, Accesorios Varios" />
+          </label>
+        </div>
+
+        <div class="grid three">
+          <label>
+            Descripción 1
+            <textarea id="desc1" rows="4" required placeholder="Primera descripción"></textarea>
+          </label>
+          <label>
+            Descripción 2
+            <textarea id="desc2" rows="4" required placeholder="Segunda descripción"></textarea>
+          </label>
+          <label>
+            Descripción 3
+            <textarea id="desc3" rows="4" required placeholder="Tercera descripción"></textarea>
+          </label>
+        </div>
+
+        <label>
+          Fotos del producto
+          <input id="images" type="file" accept="image/*" multiple required />
+          <small class="muted">Se comprimen automáticamente antes de subirlas para que el catálogo cargue más rápido.</small>
+        </label>
+
+        <div id="image-preview" class="preview-grid"></div>
+
+        <div class="actions">
+          <button id="save-product" class="btn primary" type="submit">Guardar producto</button>
+          <button id="refresh-products" class="btn ghost" type="button">Recargar lista</button>
+        </div>
+      </form>
+
+      <div id="status-box" class="status-box hidden"></div>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <h2>Productos actuales</h2>
+        <span id="product-count" class="badge">0 productos</span>
+      </div>
+      <div id="products-admin-list" class="admin-products"></div>
+    </section>
+  </main>
+</body>
+</html>

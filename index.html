@@ -4,155 +4,193 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Admin | Hacienda Real HN</title>
-  <link rel="stylesheet" href="admin.css?v=20260403v2" />
-  <script defer src="admin.js?v=20260403v2"></script>
+  <link rel="stylesheet" href="admin.css?v=20260403v3" />
+  <script defer src="admin.js?v=20260403v3"></script>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div id="session-lock" class="session-lock hidden" aria-hidden="true">
-    <div class="session-card">
-      <p class="eyebrow">Sesión bloqueada</p>
-      <h2>Volvió a cerrarse por inactividad</h2>
-      <p class="muted">Por seguridad, el token se limpió después de 10 minutos sin actividad. Vuelve a escribirlo para continuar.</p>
-      <label>
-        Token GitHub
-        <input id="unlock-token" type="password" placeholder="Pega de nuevo tu token" />
-      </label>
-      <div class="actions">
-        <button id="unlock-session" class="btn primary" type="button">Desbloquear sesión</button>
+  <section id="login-screen" class="login-screen">
+    <div class="login-card">
+      <div>
+        <p class="eyebrow">Acceso privado</p>
+        <h1>Panel administrador protegido</h1>
+        <p class="sub">Aquí no entra nadie sin licencia válida. El acceso se valida con KeyAuth y la sesión queda ligada a este navegador/dispositivo.</p>
+        <div class="login-info">
+          <span class="badge">Sin modo demo</span>
+          <span class="badge">Cierre automático por inactividad: 10 min</span>
+        </div>
+      </div>
+
+      <div class="card login-form-card">
+        <h2>Entrar con licencia</h2>
+        <p class="muted">Escribe tu key y accede al panel. Si esa licencia ya está ligada a otro navegador/dispositivo, KeyAuth la rechazará.</p>
+
+        <div class="grid two">
+          <label>
+            Nombre del responsable
+            <input id="login-name" type="text" placeholder="Ej: Brayan / Admin principal" />
+          </label>
+          <label>
+            Licencia / key
+            <input id="login-key" type="password" placeholder="Escribe tu key aquí" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="login-actions">
+          <button id="login-enter" class="btn primary" type="button">Entrar al sistema</button>
+        </div>
+
+        <div class="device-box">
+          <strong>Dispositivo actual:</strong>
+          <span id="login-device">Calculando...</span>
+        </div>
+
+        <div id="login-status" class="status-box hidden"></div>
       </div>
     </div>
+  </section>
+
+  <div id="app-shell" class="hidden">
+    <header class="topbar">
+      <div class="topbar-row">
+        <div>
+          <p class="eyebrow">Panel privado</p>
+          <h1>Administrador de productos</h1>
+          <p class="sub">Agrega varios productos seguidos, edita texto e imágenes, elimina productos y guarda todo en un solo envío al repo público.</p>
+        </div>
+        <div class="topbar-actions">
+          <div class="topbar-meta">
+            <span id="who-badge" class="badge">Usuario: -</span>
+            <span id="device-badge" class="badge">Dispositivo: -</span>
+            <span id="plan-badge" class="badge">Licencia: -</span>
+          </div>
+          <button id="logout-btn" class="btn danger" type="button">Cerrar sesión</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="card">
+        <div class="section-head">
+          <h2>Configuración GitHub</h2>
+          <div class="actions compact">
+            <button id="load-products" class="btn ghost" type="button">Cargar desde GitHub</button>
+            <button id="save-all" class="btn primary" type="button">Guardar todo en GitHub</button>
+          </div>
+        </div>
+
+        <p class="muted">Este panel edita el <code>products.json</code> del repo público y sube imágenes a <code>images/admin/</code>. El token de GitHub no se guarda y se borra al cerrar sesión.</p>
+
+        <div class="grid two">
+          <label>
+            Owner
+            <input id="gh-owner" type="text" placeholder="Ej: CatalogosHN" />
+          </label>
+          <label>
+            Repositorio público
+            <input id="gh-repo" type="text" placeholder="Ej: HaciendaReal" />
+          </label>
+          <label>
+            Rama
+            <input id="gh-branch" type="text" placeholder="main" value="main" />
+          </label>
+          <label>
+            Token GitHub
+            <input id="gh-token" type="password" placeholder="Fine-grained PAT con Contents: Read & Write" autocomplete="off" />
+          </label>
+        </div>
+
+        <label class="remember-row">
+          <input id="remember-config" type="checkbox" />
+          <span>Recordar owner, repo y rama en este navegador</span>
+        </label>
+
+        <div class="summary-row">
+          <span id="product-count" class="badge">0 productos</span>
+          <span id="pending-count" class="badge badge-warning">0 cambios pendientes</span>
+        </div>
+
+        <div id="status-box" class="status-box hidden"></div>
+      </section>
+
+      <section class="card editor-card">
+        <div class="section-head">
+          <h2 id="editor-title">Nuevo producto</h2>
+          <div class="actions compact">
+            <button id="new-product" class="btn ghost" type="button">Nuevo producto</button>
+            <button id="save-draft" class="btn primary" type="button">Guardar en borrador</button>
+          </div>
+        </div>
+
+        <form id="product-form" class="form-stack">
+          <input id="editing-uid" type="hidden" />
+
+          <div class="grid two">
+            <label>
+              Nombre del producto
+              <input id="name" type="text" required placeholder="Ej: Power Bank 20,000 mAh" />
+            </label>
+            <label>
+              Precio en Lempiras
+              <input id="price" type="number" min="0" step="0.01" required placeholder="350" />
+            </label>
+          </div>
+
+          <div class="grid two">
+            <label>
+              Estado
+              <select id="status">
+                <option value="disponible">Disponible</option>
+                <option value="agotado">Agotado</option>
+              </select>
+            </label>
+            <label>
+              Categorías
+              <input id="categories" type="text" placeholder="Tecnologia y Juegos, Accesorios Varios" />
+            </label>
+          </div>
+
+          <div class="grid three">
+            <label>
+              Descripción 1
+              <textarea id="desc1" rows="4" required placeholder="Primera descripción"></textarea>
+            </label>
+            <label>
+              Descripción 2
+              <textarea id="desc2" rows="4" placeholder="Segunda descripción"></textarea>
+            </label>
+            <label>
+              Descripción 3
+              <textarea id="desc3" rows="4" placeholder="Tercera descripción"></textarea>
+            </label>
+          </div>
+
+          <label>
+            Agregar fotos nuevas
+            <input id="images" type="file" accept="image/*" multiple />
+            <small class="muted">Puedes seguir agregando varias fotos. Se comprimen antes de subirse para que el catálogo cargue más rápido.</small>
+          </label>
+
+          <div>
+            <p class="mini-title">Imágenes actuales</p>
+            <div id="existing-preview" class="preview-grid"></div>
+          </div>
+
+          <div>
+            <p class="mini-title">Imágenes nuevas pendientes</p>
+            <div id="new-preview" class="preview-grid"></div>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Productos en borrador / actuales</h2>
+          <input id="search-products" class="search-input" type="search" placeholder="Buscar por nombre o categoría" />
+        </div>
+        <div id="products-admin-list" class="admin-products"></div>
+      </section>
+    </main>
   </div>
-
-  <header class="topbar">
-    <div>
-      <p class="eyebrow">Panel privado</p>
-      <h1>Administrador de productos</h1>
-      <p class="sub">Agrega varios productos seguidos, edita texto e imágenes, elimina productos y guarda todo en un solo envío al repo público.</p>
-    </div>
-  </header>
-
-  <main class="layout">
-    <section class="card">
-      <div class="section-head">
-        <h2>Configuración GitHub</h2>
-        <div class="actions compact">
-          <button id="load-products" class="btn ghost" type="button">Cargar desde GitHub</button>
-          <button id="save-all" class="btn primary" type="button">Guardar todo en GitHub</button>
-        </div>
-      </div>
-
-      <p class="muted">Este panel edita el <code>products.json</code> del repo público y sube imágenes a <code>images/admin/</code>. El token no se guarda y se limpia automáticamente por inactividad.</p>
-
-      <div class="grid two">
-        <label>
-          Owner
-          <input id="gh-owner" type="text" placeholder="Ej: CatalogosHN" />
-        </label>
-        <label>
-          Repositorio público
-          <input id="gh-repo" type="text" placeholder="Ej: HaciendaReal" />
-        </label>
-        <label>
-          Rama
-          <input id="gh-branch" type="text" placeholder="main" value="main" />
-        </label>
-        <label>
-          Token GitHub
-          <input id="gh-token" type="password" placeholder="Fine-grained PAT con Contents: Read & Write" autocomplete="off" />
-        </label>
-      </div>
-
-      <label class="remember-row">
-        <input id="remember-config" type="checkbox" />
-        <span>Recordar owner, repo y rama en este navegador</span>
-      </label>
-
-      <div class="summary-row">
-        <span id="product-count" class="badge">0 productos</span>
-        <span id="pending-count" class="badge badge-warning">0 cambios pendientes</span>
-      </div>
-
-      <div id="status-box" class="status-box hidden"></div>
-    </section>
-
-    <section class="card editor-card">
-      <div class="section-head">
-        <h2 id="editor-title">Nuevo producto</h2>
-        <div class="actions compact">
-          <button id="new-product" class="btn ghost" type="button">Nuevo producto</button>
-          <button id="save-draft" class="btn primary" type="button">Guardar en borrador</button>
-        </div>
-      </div>
-
-      <form id="product-form" class="form-stack">
-        <input id="editing-uid" type="hidden" />
-
-        <div class="grid two">
-          <label>
-            Nombre del producto
-            <input id="name" type="text" required placeholder="Ej: Power Bank 20,000 mAh" />
-          </label>
-          <label>
-            Precio en Lempiras
-            <input id="price" type="number" min="0" step="0.01" required placeholder="350" />
-          </label>
-        </div>
-
-        <div class="grid two">
-          <label>
-            Estado
-            <select id="status">
-              <option value="disponible">Disponible</option>
-              <option value="agotado">Agotado</option>
-            </select>
-          </label>
-          <label>
-            Categorías
-            <input id="categories" type="text" placeholder="Tecnologia y Juegos, Accesorios Varios" />
-          </label>
-        </div>
-
-        <div class="grid three">
-          <label>
-            Descripción 1
-            <textarea id="desc1" rows="4" required placeholder="Primera descripción"></textarea>
-          </label>
-          <label>
-            Descripción 2
-            <textarea id="desc2" rows="4" required placeholder="Segunda descripción"></textarea>
-          </label>
-          <label>
-            Descripción 3
-            <textarea id="desc3" rows="4" required placeholder="Tercera descripción"></textarea>
-          </label>
-        </div>
-
-        <label>
-          Agregar fotos nuevas
-          <input id="images" type="file" accept="image/*" multiple />
-          <small class="muted">Puedes seguir agregando varias fotos. Se comprimen antes de subirse para que el catálogo cargue más rápido.</small>
-        </label>
-
-        <div>
-          <p class="mini-title">Imágenes actuales</p>
-          <div id="existing-preview" class="preview-grid"></div>
-        </div>
-
-        <div>
-          <p class="mini-title">Imágenes nuevas pendientes</p>
-          <div id="new-preview" class="preview-grid"></div>
-        </div>
-      </form>
-    </section>
-
-    <section class="card">
-      <div class="section-head">
-        <h2>Productos en borrador / actuales</h2>
-        <input id="search-products" class="search-input" type="search" placeholder="Buscar por nombre o categoría" />
-      </div>
-      <div id="products-admin-list" class="admin-products"></div>
-    </section>
-  </main>
 </body>
 </html>

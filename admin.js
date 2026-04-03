@@ -1,4 +1,27 @@
+const KEYAUTH_CONFIG = {
+  enabled: true,
+  apiUrl: 'https://keyauth.win/api/1.3/',
+  appName: 'InvItems',
+  ownerId: 'RZsbvRZczd',
+  version: '1.0',
+  hash: '',
+  token: '',
+  thash: '',
+  code: ''
+};
+
 const els = {
+  loginScreen: document.getElementById('login-screen'),
+  appShell: document.getElementById('app-shell'),
+  loginName: document.getElementById('login-name'),
+  loginKey: document.getElementById('login-key'),
+  loginEnter: document.getElementById('login-enter'),
+  loginStatus: document.getElementById('login-status'),
+  loginDevice: document.getElementById('login-device'),
+  whoBadge: document.getElementById('who-badge'),
+  deviceBadge: document.getElementById('device-badge'),
+  planBadge: document.getElementById('plan-badge'),
+  logoutBtn: document.getElementById('logout-btn'),
   owner: document.getElementById('gh-owner'),
   repo: document.getElementById('gh-repo'),
   branch: document.getElementById('gh-branch'),
@@ -25,25 +48,29 @@ const els = {
   productCount: document.getElementById('product-count'),
   pendingCount: document.getElementById('pending-count'),
   searchProducts: document.getElementById('search-products'),
-  editorTitle: document.getElementById('editor-title'),
-  sessionLock: document.getElementById('session-lock'),
-  unlockToken: document.getElementById('unlock-token'),
-  unlockSession: document.getElementById('unlock-session')
+  editorTitle: document.getElementById('editor-title')
 };
 
-const STORAGE_KEY = 'hacienda-real-admin-config-v2';
+const STORAGE_KEY = 'hacienda-real-admin-config-v3';
+const AUTH_STORAGE_KEY = 'hacienda-real-admin-auth-v1';
+const ACTIVE_SESSION_KEY = 'hacienda-real-admin-active-session-v1';
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
+const LEASE_REFRESH_MS = 15000;
 
 const state = {
+  user: null,
+  deviceId: '',
+  keyauthSessionId: '',
+  tabId: `tab_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+  activityTimer: null,
+  leaseInterval: null,
   workingProducts: [],
   dirty: false,
   isSaving: false,
   searchTerm: '',
   pendingExistingImages: [],
   pendingNewFiles: [],
-  objectUrls: [],
-  inactivityTimer: null,
-  locked: false
+  objectUrls: []
 };
 
 function showStatus(message, type = 'info') {
@@ -54,6 +81,16 @@ function showStatus(message, type = 'info') {
 
 function hideStatus() {
   els.statusBox.classList.add('hidden');
+}
+
+function showLoginStatus(message, type = 'info') {
+  els.loginStatus.textContent = message;
+  els.loginStatus.className = `status-box ${type === 'success' ? 'success' : ''} ${type === 'error' ? 'error' : ''}`.trim();
+  els.loginStatus.classList.remove('hidden');
+}
+
+function hideLoginStatus() {
+  els.loginStatus.classList.add('hidden');
 }
 
 function escapeHtml(value) {
@@ -76,6 +113,37 @@ function slugify(text) {
 
 function makeUid() {
   return `p_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function nowISO() {
+  return new Date().toISOString();
+}
+
+async function sha256(text) {
+  const enc = new TextEncoder().encode(String(text || ''));
+  const hash = await crypto.subtle.digest('SHA-256', enc);
+  return [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+async function getDeviceId() {
+  const raw = [
+    navigator.userAgent || '',
+    navigator.language || '',
+    screen.width || 0,
+    screen.height || 0,
+    Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+    navigator.platform || '',
+    navigator.hardwareConcurrency || 0
+  ].join('|');
+  const hash = await sha256(raw);
+  return `WEB-${hash.slice(0, 32).toUpperCase()}`;
+}
+
+function formatExpiry(unixValue) {
+  if (!unixValue) return 'Sin fecha';
+  const num = Number(unixValue);
+  if (!Number.isFinite(num) || num <= 0) return 'Sin fecha';
+  return new Date(num * 1000).toLocaleString('es-HN');
 }
 
 function fixMojibake(value) {
@@ -108,8 +176,8 @@ function normalizeProduct(product = {}) {
   const categoriesRaw = Array.isArray(product.categories)
     ? product.categories
     : (typeof product.categories === 'string'
-        ? product.categories.split(',')
-        : (typeof product.category === 'string' ? [product.category] : []));
+      ? product.categories.split(',')
+      : (typeof product.category === 'string' ? [product.category] : []));
 
   const descriptionsRaw = Array.isArray(product.description)
     ? product.description
@@ -137,8 +205,7 @@ function normalizeProductsArray(list) {
 
 function setDirty(value) {
   state.dirty = Boolean(value);
-  const pending = state.dirty ? 'Cambios pendientes' : 'Sin cambios pendientes';
-  els.pendingCount.textContent = pending;
+  els.pendingCount.textContent = state.dirty ? 'Cambios pendientes' : 'Sin cambios pendientes';
   els.pendingCount.classList.toggle('badge-warning', state.dirty);
 }
 
@@ -151,7 +218,14 @@ function getConfig() {
   };
 }
 
+function ensureAuthenticated() {
+  if (!state.user) {
+    throw new Error('Debes iniciar sesión con una licencia válida antes de usar el admin.');
+  }
+}
+
 function validateConfig(requireToken = true) {
+  ensureAuthenticated();
   const cfg = getConfig();
   if (!cfg.owner || !cfg.repo || !cfg.branch || (requireToken && !cfg.token)) {
     throw new Error('Completa owner, repositorio, rama y token de GitHub.');
@@ -165,12 +239,11 @@ function saveConfigIfNeeded() {
     return;
   }
   const cfg = getConfig();
-  const safeConfig = {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
     owner: cfg.owner,
     repo: cfg.repo,
     branch: cfg.branch
-  };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(safeConfig));
+  }));
 }
 
 function loadSavedConfig() {
@@ -187,38 +260,284 @@ function loadSavedConfig() {
   }
 }
 
-function resetInactivityTimer() {
-  if (state.locked) return;
-  clearTimeout(state.inactivityTimer);
-  state.inactivityTimer = setTimeout(lockSession, SESSION_TIMEOUT_MS);
+function saveAuthSession() {
+  if (!state.user) return;
+  const payload = { ...state.user, lastActivity: Date.now() };
+  state.user.lastActivity = payload.lastActivity;
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload));
 }
 
-function lockSession() {
-  state.locked = true;
-  els.token.value = '';
-  els.unlockToken.value = '';
-  els.sessionLock.classList.remove('hidden');
-  els.sessionLock.setAttribute('aria-hidden', 'false');
+function loadAuthSession() {
+  try {
+    return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || 'null');
+  } catch {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    return null;
+  }
 }
 
-function unlockSession() {
-  const token = els.unlockToken.value.trim();
-  if (!token) {
-    showStatus('Escribe de nuevo el token para desbloquear.', 'error');
+function clearAuthSession() {
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  state.user = null;
+  state.keyauthSessionId = '';
+}
+
+function readLease() {
+  try {
+    return JSON.parse(localStorage.getItem(ACTIVE_SESSION_KEY) || 'null');
+  } catch {
+    localStorage.removeItem(ACTIVE_SESSION_KEY);
+    return null;
+  }
+}
+
+function leaseIsFresh(lease) {
+  return Boolean(lease && lease.lastSeen && (Date.now() - Number(lease.lastSeen) < SESSION_TIMEOUT_MS));
+}
+
+function acquireSessionLease() {
+  const current = readLease();
+  if (leaseIsFresh(current) && current.tabId !== state.tabId) {
+    throw new Error('Ya existe una sesión activa en este navegador/dispositivo. Cierra la otra pestaña o espera a que expire.');
+  }
+  localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify({
+    tabId: state.tabId,
+    deviceId: state.deviceId,
+    userName: state.user?.name || '',
+    lastSeen: Date.now()
+  }));
+}
+
+function refreshSessionLease() {
+  if (!state.user) return;
+  const current = readLease();
+  if (current && current.tabId && current.tabId !== state.tabId && leaseIsFresh(current)) {
+    logoutAuth('Se detectó otra sesión activa para este admin. Esta ventana fue cerrada por seguridad.', 'error');
     return;
   }
-  els.token.value = token;
-  els.unlockToken.value = '';
-  state.locked = false;
-  els.sessionLock.classList.add('hidden');
-  els.sessionLock.setAttribute('aria-hidden', 'true');
-  showStatus('Sesión restaurada.', 'success');
-  resetInactivityTimer();
+  localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify({
+    tabId: state.tabId,
+    deviceId: state.deviceId,
+    userName: state.user?.name || '',
+    lastSeen: Date.now()
+  }));
 }
 
-function ensureUnlocked() {
-  if (state.locked) {
-    throw new Error('La sesión está bloqueada por inactividad. Vuelve a escribir el token.');
+function releaseSessionLease() {
+  const current = readLease();
+  if (current?.tabId === state.tabId) {
+    localStorage.removeItem(ACTIVE_SESSION_KEY);
+  }
+}
+
+function clearGitHubToken() {
+  els.token.value = '';
+}
+
+function stopActivityTracking() {
+  clearTimeout(state.activityTimer);
+  state.activityTimer = null;
+  clearInterval(state.leaseInterval);
+  state.leaseInterval = null;
+}
+
+function startActivityTracking() {
+  stopActivityTracking();
+  state.activityTimer = setTimeout(() => {
+    logoutAuth('La sesión se cerró automáticamente por más de 10 minutos de inactividad.', 'error');
+  }, SESSION_TIMEOUT_MS);
+
+  state.leaseInterval = setInterval(() => {
+    if (!state.user) return;
+    saveAuthSession();
+    refreshSessionLease();
+  }, LEASE_REFRESH_MS);
+}
+
+function touchAuthenticatedActivity() {
+  if (!state.user) return;
+  saveAuthSession();
+  refreshSessionLease();
+  startActivityTracking();
+}
+
+function renderUserBadges() {
+  els.whoBadge.textContent = `Usuario: ${state.user?.name || '-'}`;
+  els.deviceBadge.textContent = `Dispositivo: ${state.deviceId.slice(0, 18)}...`;
+  const plan = state.user?.subscription || state.user?.subscriptionLevel || 'Licencia activa';
+  const expiry = formatExpiry(state.user?.expiresUnix);
+  els.planBadge.textContent = `Licencia: ${plan} · ${expiry}`;
+}
+
+function showLogin(message = '', type = 'info') {
+  els.appShell.classList.add('hidden');
+  els.loginScreen.classList.remove('hidden');
+  els.loginKey.value = '';
+  renderUserBadges();
+  if (message) showLoginStatus(message, type);
+  else hideLoginStatus();
+}
+
+function showApp() {
+  renderUserBadges();
+  els.loginScreen.classList.add('hidden');
+  els.appShell.classList.remove('hidden');
+  hideLoginStatus();
+  hideStatus();
+  touchAuthenticatedActivity();
+}
+
+function logoutAuth(message = 'Sesión cerrada.', type = 'info') {
+  stopActivityTracking();
+  clearGitHubToken();
+  clearAuthSession();
+  releaseSessionLease();
+  showLogin(message, type);
+}
+
+function keyAuthIsConfigured() {
+  return (
+    KEYAUTH_CONFIG.enabled &&
+    KEYAUTH_CONFIG.appName &&
+    KEYAUTH_CONFIG.ownerId &&
+    !KEYAUTH_CONFIG.appName.includes('PON_AQUI') &&
+    !KEYAUTH_CONFIG.ownerId.includes('PON_AQUI')
+  );
+}
+
+async function keyAuthRequest(params) {
+  const url = new URL(KEYAUTH_CONFIG.apiUrl);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) url.searchParams.set(key, value);
+  });
+
+  const res = await fetch(url.toString(), { method: 'GET', cache: 'no-store' });
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('KeyAuth respondió algo no válido.');
+  }
+  if (!res.ok) {
+    throw new Error(data.message || `Error HTTP ${res.status}`);
+  }
+  return data;
+}
+
+async function keyAuthInit() {
+  if (state.keyauthSessionId) return state.keyauthSessionId;
+  const data = await keyAuthRequest({
+    type: 'init',
+    ver: KEYAUTH_CONFIG.version || '',
+    name: KEYAUTH_CONFIG.appName || '',
+    ownerid: KEYAUTH_CONFIG.ownerId || '',
+    hash: KEYAUTH_CONFIG.hash || '',
+    token: KEYAUTH_CONFIG.token || '',
+    thash: KEYAUTH_CONFIG.thash || ''
+  });
+
+  if (!data.success || !data.sessionid) {
+    throw new Error(data.message || 'No se pudo inicializar KeyAuth.');
+  }
+
+  state.keyauthSessionId = data.sessionid;
+  return state.keyauthSessionId;
+}
+
+async function keyAuthLicenseLogin(licenseKey, hwid) {
+  await keyAuthInit();
+  const data = await keyAuthRequest({
+    type: 'license',
+    key: licenseKey,
+    sessionid: state.keyauthSessionId,
+    name: KEYAUTH_CONFIG.appName || '',
+    ownerid: KEYAUTH_CONFIG.ownerId || '',
+    hwid,
+    code: KEYAUTH_CONFIG.code || ''
+  });
+
+  if (!data.success) {
+    throw new Error(data.message || 'Licencia inválida.');
+  }
+  return data;
+}
+
+async function doLogin() {
+  const name = cleanText(els.loginName.value) || 'Administrador';
+  const key = els.loginKey.value.trim();
+
+  if (!key) {
+    showLoginStatus('Escribe una key válida.', 'error');
+    return;
+  }
+  if (!keyAuthIsConfigured()) {
+    showLoginStatus('KeyAuth no está configurado correctamente en este panel.', 'error');
+    return;
+  }
+
+  els.loginEnter.disabled = true;
+  showLoginStatus('Validando licencia con KeyAuth...', 'info');
+
+  try {
+    const keyauthData = await keyAuthLicenseLogin(key, state.deviceId);
+    const sub = Array.isArray(keyauthData?.info?.subscriptions) ? keyauthData.info.subscriptions[0] : null;
+
+    state.user = {
+      id: makeUid(),
+      name: keyauthData?.info?.username || name,
+      keyMasked: `${key.slice(0, 4)}****`,
+      deviceId: state.deviceId,
+      authProvider: 'keyauth',
+      keyauthUsername: keyauthData?.info?.username || '',
+      keyauthHwid: keyauthData?.info?.hwid || state.deviceId,
+      subscription: sub?.subscription || '',
+      subscriptionLevel: sub?.level || '',
+      expiresUnix: sub?.expiry || '',
+      lastActivity: Date.now()
+    };
+
+    acquireSessionLease();
+    saveAuthSession();
+    showApp();
+    showStatus('Acceso concedido. Ya puedes administrar el catálogo.', 'success');
+  } catch (error) {
+    console.error(error);
+    clearAuthSession();
+    releaseSessionLease();
+    showLoginStatus(error.message || 'No se pudo validar la licencia.', 'error');
+  } finally {
+    els.loginEnter.disabled = false;
+  }
+}
+
+function tryRestoreSession() {
+  const saved = loadAuthSession();
+  if (!saved) {
+    showLogin();
+    return;
+  }
+
+  if (saved.deviceId !== state.deviceId) {
+    clearAuthSession();
+    showLogin('Esta licencia estaba ligada a otro navegador/dispositivo. Vuelve a iniciar sesión.', 'error');
+    return;
+  }
+
+  if (!saved.lastActivity || Date.now() - Number(saved.lastActivity) >= SESSION_TIMEOUT_MS) {
+    clearAuthSession();
+    releaseSessionLease();
+    showLogin('La sesión anterior ya expiró. Vuelve a escribir tu key.', 'error');
+    return;
+  }
+
+  state.user = saved;
+  try {
+    acquireSessionLease();
+    showApp();
+  } catch (error) {
+    clearAuthSession();
+    showLogin(error.message || 'No se pudo restaurar la sesión.', 'error');
   }
 }
 
@@ -293,35 +612,21 @@ function fillEditor(product) {
 }
 
 function currentEditorProduct() {
-  const name = cleanText(els.name.value);
-  const descriptions = [els.desc1.value, els.desc2.value, els.desc3.value]
-    .map(cleanText)
-    .filter(Boolean);
-
   const product = {
     uid: els.editingUid.value || makeUid(),
-    name,
+    name: cleanText(els.name.value),
     price: Number(els.price.value || 0),
     categories: parseCategories(els.categories.value),
-    description: descriptions,
+    description: [els.desc1.value, els.desc2.value, els.desc3.value].map(cleanText).filter(Boolean),
     status: els.status.value,
     images: [...state.pendingExistingImages],
     _newFiles: [...state.pendingNewFiles]
   };
 
-  if (!product.name) {
-    throw new Error('Escribe el nombre del producto.');
-  }
-  if (!Number.isFinite(product.price) || product.price < 0) {
-    throw new Error('El precio no es válido.');
-  }
-  if (!product.description.length) {
-    throw new Error('Agrega al menos una descripción.');
-  }
-  if (!product.images.length && !product._newFiles.length) {
-    throw new Error('Debes dejar al menos una imagen actual o nueva.');
-  }
-
+  if (!product.name) throw new Error('Escribe el nombre del producto.');
+  if (!Number.isFinite(product.price) || product.price < 0) throw new Error('El precio no es válido.');
+  if (!product.description.length) throw new Error('Agrega al menos una descripción.');
+  if (!product.images.length && !product._newFiles.length) throw new Error('Debes dejar al menos una imagen actual o nueva.');
   return product;
 }
 
@@ -339,7 +644,7 @@ function renderProductsList() {
     return;
   }
 
-  els.productsList.innerHTML = list.map((product) => {
+  els.productsList.innerHTML = list.map(product => {
     const available = product.status !== 'agotado';
     const categories = (product.categories || []).join(', ') || 'Sin categoría';
     const pendingImages = (product._newFiles || []).length;
@@ -375,11 +680,9 @@ function upsertWorkingProduct(product) {
   normalized._newFiles = [...(product._newFiles || [])];
 
   const index = state.workingProducts.findIndex(item => item.uid === normalized.uid);
-  if (index >= 0) {
-    state.workingProducts[index] = normalized;
-  } else {
-    state.workingProducts.unshift(normalized);
-  }
+  if (index >= 0) state.workingProducts[index] = normalized;
+  else state.workingProducts.unshift(normalized);
+
   setDirty(true);
   renderProductsList();
 }
@@ -404,8 +707,8 @@ async function githubRequest(path, method = 'GET', body = null, cfg = null) {
   const config = cfg || validateConfig(true);
   const url = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/contents/${path}`;
   const headers = {
-    'Accept': 'application/vnd.github+json',
-    'Authorization': `Bearer ${config.token}`,
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${config.token}`,
     'X-GitHub-Api-Version': '2022-11-28'
   };
 
@@ -433,7 +736,18 @@ function arrayBufferToBase64(buffer) {
 }
 
 async function compressImage(file) {
-  const bitmap = await createImageBitmap(file);
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    bitmap = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
   const maxSide = 1600;
   let { width, height } = bitmap;
   const scale = Math.min(1, maxSide / Math.max(width, height));
@@ -472,20 +786,12 @@ async function uploadImage(file, productSlug, index, cfg) {
 async function getRepoProducts(cfg) {
   const data = await githubRequest('products.json', 'GET', null, cfg);
   const decoded = decodeURIComponent(escape(atob(data.content.replace(/\n/g, ''))));
-  return {
-    sha: data.sha,
-    products: normalizeProductsArray(JSON.parse(decoded))
-  };
+  return { sha: data.sha, products: normalizeProductsArray(JSON.parse(decoded)) };
 }
 
 async function saveRepoProducts(products, sha, message, cfg) {
   const content = btoa(unescape(encodeURIComponent(JSON.stringify(products, null, 2))));
-  await githubRequest('products.json', 'PUT', {
-    message,
-    content,
-    sha,
-    branch: cfg.branch
-  }, cfg);
+  await githubRequest('products.json', 'PUT', { message, content, sha, branch: cfg.branch }, cfg);
 }
 
 function finalizeProductForSave(product) {
@@ -501,9 +807,7 @@ function finalizeProductForSave(product) {
 
 function collectImageSet(products) {
   const set = new Set();
-  products.forEach(product => {
-    (product.images || []).forEach(path => set.add(path));
-  });
+  products.forEach(product => (product.images || []).forEach(path => set.add(path)));
   return set;
 }
 
@@ -521,7 +825,6 @@ async function deleteRepoFileIfPossible(path, cfg) {
 }
 
 async function saveAllChanges() {
-  ensureUnlocked();
   if (state.isSaving) return;
   const cfg = validateConfig(true);
   saveConfigIfNeeded();
@@ -530,6 +833,7 @@ async function saveAllChanges() {
   els.saveAll.disabled = true;
   els.saveDraft.disabled = true;
   try {
+    touchAuthenticatedActivity();
     showStatus('Preparando cambios y sincronizando con GitHub...');
     const repoData = await getRepoProducts(cfg);
     const oldImageSet = collectImageSet(repoData.products);
@@ -554,13 +858,10 @@ async function saveAllChanges() {
     }
 
     showStatus('Guardando products.json...');
-    await saveRepoProducts(finalProducts, repoData.sha, 'Actualizar catálogo desde admin', cfg);
+    await saveRepoProducts(finalProducts, repoData.sha, 'Actualizar catálogo desde admin protegido', cfg);
 
     const newImageSet = collectImageSet(finalProducts);
-    const orphanedAdminImages = [...oldImageSet].filter(path => {
-      return path.startsWith('images/admin/') && !newImageSet.has(path);
-    });
-
+    const orphanedAdminImages = [...oldImageSet].filter(path => path.startsWith('images/admin/') && !newImageSet.has(path));
     for (const path of orphanedAdminImages) {
       showStatus(`Limpiando imagen sin uso: ${path}`);
       await deleteRepoFileIfPossible(path, cfg);
@@ -583,6 +884,7 @@ async function saveAllChanges() {
 
 function saveDraftFromEditor() {
   try {
+    ensureAuthenticated();
     const product = currentEditorProduct();
     upsertWorkingProduct(product);
     showStatus(`Borrador guardado: ${product.name}`, 'success');
@@ -593,12 +895,8 @@ function saveDraftFromEditor() {
 }
 
 function removeEditorImage(type, index) {
-  if (type === 'existing') {
-    state.pendingExistingImages.splice(index, 1);
-  }
-  if (type === 'new') {
-    state.pendingNewFiles.splice(index, 1);
-  }
+  if (type === 'existing') state.pendingExistingImages.splice(index, 1);
+  if (type === 'new') state.pendingNewFiles.splice(index, 1);
   renderEditorPreviews();
 }
 
@@ -617,13 +915,7 @@ function onProductsListClick(event) {
   }
 
   if (action === 'duplicate') {
-    const copy = {
-      ...product,
-      uid: makeUid(),
-      name: `${product.name} copia`,
-      images: [...(product.images || [])],
-      _newFiles: []
-    };
+    const copy = { ...product, uid: makeUid(), name: `${product.name} copia`, images: [...(product.images || [])], _newFiles: [] };
     state.workingProducts.unshift(copy);
     setDirty(true);
     renderProductsList();
@@ -667,34 +959,68 @@ function onSearchInput() {
   renderProductsList();
 }
 
-els.images.addEventListener('change', handleImageSelection);
-els.saveDraft.addEventListener('click', saveDraftFromEditor);
-els.newProduct.addEventListener('click', () => clearEditor({ keepStatus: false }));
-els.loadProducts.addEventListener('click', () => {
-  fetchPublicProducts().catch(err => {
-    console.error(err);
-    showStatus(err.message || 'No se pudieron cargar los productos.', 'error');
+function bindEvents() {
+  els.images.addEventListener('change', handleImageSelection);
+  els.saveDraft.addEventListener('click', saveDraftFromEditor);
+  els.newProduct.addEventListener('click', () => clearEditor({ keepStatus: false }));
+  els.loadProducts.addEventListener('click', () => {
+    fetchPublicProducts().catch(err => {
+      console.error(err);
+      showStatus(err.message || 'No se pudieron cargar los productos.', 'error');
+    });
   });
-});
-els.saveAll.addEventListener('click', saveAllChanges);
-els.productsList.addEventListener('click', onProductsListClick);
-els.existingPreview.addEventListener('click', onPreviewClick);
-els.newPreview.addEventListener('click', onPreviewClick);
-els.searchProducts.addEventListener('input', onSearchInput);
-els.unlockSession.addEventListener('click', unlockSession);
-els.unlockToken.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') unlockSession();
-});
-els.form.addEventListener('submit', (event) => {
-  event.preventDefault();
-  saveDraftFromEditor();
-});
-[els.owner, els.repo, els.branch, els.remember].forEach(el => el.addEventListener('change', saveConfigIfNeeded));
-['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(evt => {
-  window.addEventListener(evt, resetInactivityTimer, { passive: true });
-});
+  els.saveAll.addEventListener('click', saveAllChanges);
+  els.productsList.addEventListener('click', onProductsListClick);
+  els.existingPreview.addEventListener('click', onPreviewClick);
+  els.newPreview.addEventListener('click', onPreviewClick);
+  els.searchProducts.addEventListener('input', onSearchInput);
+  els.form.addEventListener('submit', event => {
+    event.preventDefault();
+    saveDraftFromEditor();
+  });
 
-loadSavedConfig();
-clearEditor({ keepStatus: false });
-renderProductsList();
-resetInactivityTimer();
+  els.loginEnter.addEventListener('click', doLogin);
+  els.loginKey.addEventListener('keydown', event => {
+    if (event.key === 'Enter') doLogin();
+  });
+  els.loginName.addEventListener('keydown', event => {
+    if (event.key === 'Enter') doLogin();
+  });
+  els.logoutBtn.addEventListener('click', () => logoutAuth('Sesión cerrada correctamente.', 'success'));
+
+  [els.owner, els.repo, els.branch, els.remember].forEach(el => el.addEventListener('change', saveConfigIfNeeded));
+
+  ['click', 'keydown', 'mousemove', 'scroll', 'touchstart'].forEach(evt => {
+    window.addEventListener(evt, () => {
+      if (state.user) touchAuthenticatedActivity();
+    }, { passive: true });
+  });
+
+  window.addEventListener('storage', event => {
+    if (event.key !== ACTIVE_SESSION_KEY || !state.user) return;
+    const lease = readLease();
+    if (lease && lease.tabId !== state.tabId && leaseIsFresh(lease)) {
+      logoutAuth('Otra ventana tomó el control del admin. Esta sesión fue cerrada por seguridad.', 'error');
+    }
+  });
+
+  window.addEventListener('beforeunload', () => {
+    releaseSessionLease();
+    stopActivityTracking();
+  });
+}
+
+async function init() {
+  loadSavedConfig();
+  clearEditor({ keepStatus: false });
+  renderProductsList();
+  bindEvents();
+
+  state.deviceId = await getDeviceId();
+  els.loginDevice.textContent = state.deviceId;
+  renderUserBadges();
+
+  tryRestoreSession();
+}
+
+init();

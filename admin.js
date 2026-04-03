@@ -102,8 +102,23 @@ function renderImagePreview(files) {
 }
 
 async function fetchPublicProducts() {
-  const res = await fetch(`products.json?v=${Date.now()}`, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`No se pudo leer products.json (${res.status}).`);
+  const cfg = getConfig();
+
+  if (!cfg.owner || !cfg.repo || !cfg.branch) {
+    publicProducts = [];
+    renderAdminProducts(publicProducts);
+    showStatus('Completa owner, repositorio y rama, luego pulsa "Cargar productos".', 'error');
+    return;
+  }
+
+  const url = `https://raw.githubusercontent.com/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/${encodeURIComponent(cfg.branch)}/products.json?v=${Date.now()}`;
+
+  const res = await fetch(url, { cache: 'no-store' });
+
+  if (!res.ok) {
+    throw new Error(`No se pudo leer products.json del repo público (${res.status}). Revisa owner, repo, rama y que exista el archivo.`);
+  }
+
   const data = await res.json();
   publicProducts = Array.isArray(data) ? data : [];
   renderAdminProducts(publicProducts);
@@ -342,7 +357,10 @@ els.productsList.addEventListener('click', onProductsListClick);
 [els.owner, els.repo, els.branch, els.token, els.remember].forEach(el => el.addEventListener('change', saveConfigIfNeeded));
 
 loadSavedConfig();
-fetchPublicProducts().catch(err => {
-  console.error(err);
-  showStatus(err.message || 'No se pudieron cargar los productos actuales.', 'error');
-});
+
+if (els.owner.value && els.repo.value && els.branch.value) {
+  fetchPublicProducts().catch(err => {
+    console.error(err);
+    showStatus(err.message || 'No se pudieron cargar los productos actuales.', 'error');
+  });
+}
